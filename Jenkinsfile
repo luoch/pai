@@ -56,6 +56,35 @@ echo "Deploy Cluster finished!"
         }
       }
     }
+    stage('Test') {
+      parallel {
+        stage('Test SingleBox') {
+          steps {
+            sh '''#! /bin/bash
+
+set -x
+exit-1'''
+            catchError() {
+              input 'Test singlebox failed! Would you like to clean the deployment?'
+            }
+
+          }
+        }
+        stage('Test Cluster') {
+          steps {
+            sh '''#! /bin/bash
+
+set -x
+
+exit 0'''
+            catchError() {
+              input 'Test cluster failed! Would you like to clean the deployment?'
+            }
+
+          }
+        }
+      }
+    }
   }
   options {
     disableConcurrentBuilds()
