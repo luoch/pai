@@ -63,7 +63,8 @@ echo "Deploy Cluster finished!"
             sh '''#! /bin/bash
 
 set -x
-exit-1'''
+exit 1
+'''
             catchError() {
               input 'Test singlebox failed! Would you like to clean the deployment?'
             }
@@ -76,7 +77,8 @@ exit-1'''
 
 set -x
 
-exit 0'''
+exit 0
+'''
             catchError() {
               input 'Test cluster failed! Would you like to clean the deployment?'
             }
