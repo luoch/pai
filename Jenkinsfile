@@ -65,14 +65,11 @@ echo "Deploy Cluster finished!"
                 sh '''#! /bin/bash
 
 set -x
-exit -1
+exit 1
 '''
               } catch (err) {
                 echo "Failed: ${err}"
-                currentStage.result = 'FAILURE'
                 currentBuild.result = 'FAILURE'
-
-                input 'Test SingleBox failed! Would you like to clean the deployment?'
               }
             }
           }
@@ -90,9 +87,19 @@ exit -1
               } catch (err) {
                 echo "Failed: ${err}"
                 currentBuild.result = 'FAILURE'
-
-                input 'Test Cluster failed! Would you like to clean the deployment?'
               }
+            }
+          }
+        }
+
+        stage('Clean Up') {
+          steps {
+            when {
+                // pause if failed, so we can reserve the environment for debuging
+                expression { currentBuild.result == 'FAILURE' }
+            }
+            steps {
+                input 'Failed! Would you like to clean the deployment now?'
             }
           }
         }
