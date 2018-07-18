@@ -65,11 +65,13 @@ echo "Deploy Cluster finished!"
                 sh '''#! /bin/bash
 
 set -x
-exit 1
+exit -1
 '''
               } catch (err) {
                 echo "Failed: ${err}"
                 currentBuild.result = 'FAILURE'
+
+                input 'Test SingleBox failed! Would you like to clean the deployment now?'
               }
             }
           }
@@ -87,6 +89,8 @@ exit 1
               } catch (err) {
                 echo "Failed: ${err}"
                 currentBuild.result = 'FAILURE'
+
+                input 'Test Cluster failed! Would you like to clean the deployment now?'
               }
             }
           }
@@ -94,13 +98,36 @@ exit 1
       }
     }
     stage('Clean Up') {
-      steps {
-        when {
-            // pause if failed, so we can reserve the environment for debuging
-            expression { currentBuild.result == 'FAILURE' }
+      parallel {
+        stage('Clean up A SingleBox') {
+          agent {
+            node {
+              label 'single-box'
+            }
+
+          }
+          steps {
+            sh '''#!/bin/bash
+set -x
+
+echo "Clean up!"
+'''
+          }
         }
-        steps {
-            input 'Failed! Would you like to clean the deployment now?'
+        stage('Clean up Cluster') {
+          agent {
+            node {
+              label 'cluster-install'
+            }
+
+          }
+          steps {
+            sh '''#!/bin/bash
+set -x
+
+echo "Clean up!"
+'''
+          }
         }
       }
     }
