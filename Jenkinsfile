@@ -60,30 +60,35 @@ echo "Deploy Cluster finished!"
       parallel {
         stage('Test A SingleBox') {
           steps {
-            sh '''#! /bin/bash
+            try {
+              sh '''#! /bin/bash
 
 set -x
 exit 1
 '''
-            echo currentBuild.result
-            catchError() {
-              input 'Test singlebox failed! Would you like to clean the deployment?'
-            }
+            } catch (err) {
+              echo "Failed: ${err}"
+              currentBuild.result = 'FAILURE'
 
+              input 'Test SingleBox failed! Would you like to clean the deployment?'
+            }
           }
         }
         stage('Test Cluster') {
           steps {
+            try {
             sh '''#! /bin/bash
 
 set -x
 
 exit 0
 '''
-            catchError() {
-              input 'Test cluster failed! Would you like to clean the deployment?'
-            }
+            } catch (err) {
+              echo "Failed: ${err}"
+              currentBuild.result = 'FAILURE'
 
+              input 'Test Cluster failed! Would you like to clean the deployment?'
+            }
           }
         }
       }
