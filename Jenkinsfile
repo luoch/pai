@@ -58,7 +58,7 @@ echo "Deploy Cluster finished!"
     }
     stage('Test') {
       parallel {
-        stage('Test SingleBox') {
+        stage('Test A SingleBox') {
           steps {
             sh '''#! /bin/bash
 
