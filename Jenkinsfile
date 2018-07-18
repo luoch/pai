@@ -65,10 +65,11 @@ echo "Deploy Cluster finished!"
                 sh '''#! /bin/bash
 
 set -x
-exit 1
+exit -1
 '''
               } catch (err) {
                 echo "Failed: ${err}"
+                currentStage.result = 'FAILURE'
                 currentBuild.result = 'FAILURE'
 
                 input 'Test SingleBox failed! Would you like to clean the deployment?'
