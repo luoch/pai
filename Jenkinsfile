@@ -65,6 +65,7 @@ echo "Deploy Cluster finished!"
 set -x
 exit 1
 '''
+            echo currentBuild.result
             catchError() {
               input 'Test singlebox failed! Would you like to clean the deployment?'
             }
