@@ -91,17 +91,16 @@ exit 1
             }
           }
         }
-
-        stage('Clean Up') {
-          steps {
-            when {
-                // pause if failed, so we can reserve the environment for debuging
-                expression { currentBuild.result == 'FAILURE' }
-            }
-            steps {
-                input 'Failed! Would you like to clean the deployment now?'
-            }
-          }
+      }
+    }
+    stage('Clean Up') {
+      steps {
+        when {
+            // pause if failed, so we can reserve the environment for debuging
+            expression { currentBuild.result == 'FAILURE' }
+        }
+        steps {
+            input 'Failed! Would you like to clean the deployment now?'
         }
       }
     }
