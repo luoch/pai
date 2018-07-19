@@ -64,6 +64,9 @@ echo "Deploy Cluster finished!"
               try {
                 sh '''#! /bin/bash
 
+#TODO
+printenv
+
 set -x
 exit -1
 '''
