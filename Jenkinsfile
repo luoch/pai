@@ -13,7 +13,7 @@ pipeline {
         script {
           env.CI_CLUSTER = sh 'echo $NODE_NAME'
         }
-        echo 'Select CI Cluster: $CI_CLUSTER'
+        echo 'Select CI Cluster: ${env.CI_CLUSTER}'
       }
     }
     stage('Build Images') {
@@ -23,6 +23,7 @@ pipeline {
         }
       }
       steps {
+        echo 'Select CI Cluster: ${env.CI_CLUSTER}'
         sh '''#! /bin/bash
 
 set -x
