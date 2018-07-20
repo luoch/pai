@@ -10,7 +10,9 @@ pipeline {
   stages {
     stage('Choose a CI Cluster') {
       steps {
-        env.CI_CLUSTER = sh 'echo $NODE_NAME'
+        script {
+          env.CI_CLUSTER = sh 'echo $NODE_NAME'
+        }
         echo 'Select CI Cluster: $CI_CLUSTER'
       }
     }
