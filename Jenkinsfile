@@ -9,15 +9,16 @@ pipeline {
   }
   stages {
     stage('Choose a CI Cluster') {
-      env.CI_CLUSTER = sh 'echo $NODE_NAME'
-      echo 'Select CI Cluster: $CI_CLUSTER'
+      steps {
+        env.CI_CLUSTER = sh 'echo $NODE_NAME'
+        echo 'Select CI Cluster: $CI_CLUSTER'
+      }
     }
     stage('Build Images') {
       agent {
         node {
           label 'build-images'
         }
-
       }
       steps {
         sh '''#! /bin/bash
