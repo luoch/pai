@@ -15,15 +15,28 @@
 # DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-# Rule Syntax Reference: https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
-# Rule Introduction: Any node whose cpu utilization is higher than 75% for 2 minutes duration
-#ALERT NodeCPUUsage
-#  IF (100 - (avg by (instance) (irate(node_cpu{name="node-exporter",mode="idle"}[5m])) * 100)) > 75
-#  FOR 2m
-#  LABELS {
-#    severity="page"
-#  }
-#  ANNOTATIONS {
-#    SUMMARY = "{{$labels.instance}}: High CPU usage detected",
-#    DESCRIPTION = "{{$labels.instance}}: CPU usage is above 75% (current value is: {{ $value }})"
-#  }
+import sys
+import json
+import argparse
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-s', '--src-json', dest="src_json", required=True,
+                        help="The json with the data you wanna write")
+    parser.add_argument('-d', '--dst-json', dest="dst_json", required=True,
+                        help="The json with the data you wanna update")
+    args = parser.parse_args()
+
+    with open(args.src_json, "r") as jsonFile:
+        src_data = json.load(jsonFile)
+
+    with open(args.dst_json, "r") as jsonFile:
+        dst_data = json.load(jsonFile)
+
+    for conf_key in src_data:
+        dst_data[conf_key] = src_data[conf_key]
+        changed = True
+
+    with open(args.dst_json, 'w') as jsonFile:
+        json.dump(dst_data, jsonFile)

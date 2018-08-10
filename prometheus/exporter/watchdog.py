@@ -16,6 +16,7 @@
 # DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import urlparse
 import os
 import subprocess
 import json
@@ -25,348 +26,343 @@ import logging
 from logging.handlers import RotatingFileHandler
 import time
 import common
+import collections
+import copy
 
-loggerRoot = logging.getLogger()
-logger = logging.getLogger("watchdog")
-loggerCommon = logging.getLogger("common")
+import utils
+from utils import Metric
 
-class Service:
-    name = ""
-    kube_pod_status_probe_not_ready = 0
-    kube_pod_status_phase_failed = 0
-    kube_pod_status_phase_unknown = 0
-    pod_container_status_waiting = 0
-    pod_container_status_terminated = 0
-    pod_container_status_not_ready = 0
-    pod_container_status_restart_total = 0
+logger = logging.getLogger(__name__)
 
-def parse_pods_status(podsJsonObject, outputFile):
-    # metrics
-    kube_pod_status_probe_not_ready = 0
-    kube_pod_status_phase_failed = 0
-    kube_pod_status_phase_unknown = 0
-    pod_container_status_waiting = 0
-    pod_container_status_terminated = 0
-    pod_container_status_not_ready = 0
-    pod_container_status_restarted_pod_count = 0
-    podItems = podsJsonObject["items"]
-    serviceMetrics = []
-    existServiceKey = {}
-    for pod in podItems:
-        # all / per pod phase failed/unkown/Not ready (condition)
-        serviceName = ""
 
-        if "generateName" in pod["metadata"]:
-            serviceName = pod["metadata"]["generateName"]
-        else:
-            serviceName = pod["metadata"]["name"]
+class MetricEntity(object):
+    """ interface that has one method that can convert this obj into Metric """
+    def to_metric(self):
+        pass
 
-        if serviceName not in existServiceKey:
-            service = Service()
-            service.name = serviceName
-            existServiceKey[serviceName] = 1
-            serviceMetrics.append(service)
-        else:
-            for sr in serviceMetrics:
-                if sr.name == serviceName:
-                    service = sr
-                    break
 
-        status = pod["status"]
-        phase = status["phase"]
-        conditions = status["conditions"]
-        ready = "True"
-        init = "True"
-        scheduled = "True"
-        # 1. check not ready pod
-        for condition in conditions:
-            if condition["type"] == "Ready":
-                ready = condition["status"]
-            elif condition["type"] == "Initialized":
-                init = condition["status"]
-            elif condition["type"] == "PodScheduled":
-                scheduled = condition["status"]
+class PaiPod(MetricEntity):
+    """ represent a pod count, all fields except condition_map should of type string """
 
-        if ready != "True" and init == "True" and scheduled == "True":
-            kube_pod_status_probe_not_ready += 1
-            # specific pod occurs readiness probe failed error, condition is not ready, value is 1
-            logger.error("pod_current_probe_not_ready{{pod=\"{}\", hostip=\"{}\"}} {}\n".format(pod["metadata"]["name"], pod["status"]["hostIP"], 1))
-            service.kube_pod_status_probe_not_ready += 1
-        # 2. check failed phase pods
-        if phase == "Failed":
-            kube_pod_status_phase_failed += 1
-            # specific pod phase become faile, value is 1
-            logger.error("pod_current_phase_failed{{pod=\"{0}\", hostip=\"{}\"}} {1}\n".format(pod["metadata"]["name"], pod["status"]["hostIP"], 1))
-            service.kube_pod_status_phase_failed += 1
+    def __init__(self, name, phase, host_ip, condition_map):
+        self.name = name
+        self.phase = phase # should be lower case
+        self.host_ip = host_ip # maybe None
+        self.condition_map = condition_map
 
-        # 3. check unknown phase pods
-        if phase == "Unknown":
-            kube_pod_status_phase_unknown += 1
-            # specific pod phase become unknown, value is 1
-            logger.error(" pod_current_phase_unknown{{pod=\"{0}\", hostip=\"{}\"}} {1}\n".format(pod["metadata"]["name"], pod["status"]["hostIP"], 1))
-            service.kube_pod_status_phase_unknown += 1
+    def to_metric(self):
+        label = {"name": self.name, "phase": self.phase}
 
-        containerStatus = status["containerStatuses"]
+        if self.host_ip is not None:
+            label["host_ip"] = self.host_ip
 
-        # 4. check pod containers running/waiting/terminated status
-        for perContainerStatus in containerStatus:
-            containerReady = perContainerStatus["ready"]
-            restartCount = perContainerStatus["restartCount"]
-            if not containerReady:
-                pod_container_status_not_ready +=1
-                # specific pod contains container status is not ready, value is 1
-                logger.error("container_current_not_ready{{pod=\"{0}\", container=\"{1}\", hostip=\"{2}\"}} {3}\n".format(pod["metadata"]["name"], perContainerStatus["name"], pod["status"]["hostIP"], 1))
-                service.pod_container_status_not_ready += 1
+        for k, v in self.condition_map.items():
+            label[k] = v
 
-            state = perContainerStatus["state"]
-            if "terminated" in state:
-                pod_container_status_terminated += 1
-                # specific pod container status is terminated total count, value is 1
-                logger.error("container_current_terminated{{pod=\"{0}\", container=\"{1}\", hostip=\"{2}\"}} {3}\n".format(pod["metadata"]["name"], perContainerStatus["name"], pod["status"]["hostIP"], 1))
-                service.pod_container_status_terminated += 1
+        return Metric("pai_pod_count", label, 1)
 
-            if "waiting" in state:
-                pod_container_status_waiting += 1
-                # specific pod container status is waiting  total count, value is 1
-                logger.error("container_current_waiting{{pod=\"{0}\", container=\"{1}\", hostip=\"{2}\"}} {3}\n".format(pod["metadata"]["name"], perContainerStatus["name"], pod["status"]["hostIP"], 1))
-                service.pod_container_status_waiting += 1
 
-            if restartCount > 0:
-                pod_container_status_restarted_pod_count += 1
-                # specific pod's container restart total count
-                logger.error("container_accumulation_restart_total{{pod=\"{0}\", container=\"{1}\", instance=\"{2}\"}} {3}\n".format(pod["metadata"]["name"], perContainerStatus["name"], pod["status"]["hostIP"], restartCount))
-                service.pod_container_status_restart_total += 1
+class PaiContainer(MetricEntity):
+    """ represent a container count, all fields should of type string """
 
-    # service level aggregation metrics
-    for service in serviceMetrics:
-        # each service occurs readiness probe failed error, condition is not ready, total count
-        if service.kube_pod_status_probe_not_ready != 0:
-            logger.error("service_current_probe_not_ready_pod_count{{service=\"{}\"}} {}\n".format(service.name, service.kube_pod_status_probe_not_ready))
-        # each service pods' phase become failed total count
-        if service.kube_pod_status_phase_failed != 0:
-            logger.error("service_current_phase_failed_pod_count{{service=\"{}\"}} {}\n".format(service.name, service.kube_pod_status_phase_failed))
-        # each service pods' phase become unknown total count
-        if service.kube_pod_status_phase_unknown != 0:
-            logger.error("service_current_phase_unknown_pod_count{{service=\"{}\"}} {}\n".format(service.name, service.kube_pod_status_phase_unknown))
-        # each service pods' contains container status is not ready total count
-        if service.pod_container_status_waiting != 0:
-            logger.error("service_current_not_ready_container_count{{service=\"{}\"}} {}\n".format(service.name, service.pod_container_status_waiting))
-        # each service pods' container status is terminated total count
-        if service.pod_container_status_terminated != 0:
-            logger.error("service_current_terminated_container_count{{service=\"{}\"}} {}\n".format(service.name, service.pod_container_status_terminated))
-        # each service pods' container status is waiting  total count
-        if service.pod_container_status_not_ready != 0:
-            logger.error("service_current_waiting_container_count{{service=\"{}\"}} {}\n".format(service.name, service.pod_container_status_not_ready))
-        # each service pods' container restart total count
-        if service.pod_container_status_restart_total != 0:
-            logger.error("service_restarted_container_count{{service=\"{}\"}} {}\n".format(service.name, service.pod_container_status_restart_total))
+    def __init__(self, service_name, name, state, ready):
+        self.service_name = service_name
+        self.name = name
+        self.state = state
+        self.ready = ready
 
-    # aggregate whole cluster level service metrics
-    # cluster pods' occurs readiness probe failed error, condition is not ready, total count
-    outputFile.write("cluster_current_probe_not_ready_pod_count {}\n".format(kube_pod_status_probe_not_ready))
-    # cluster pods' phase become failed total count
-    outputFile.write("cluster_current_phase_failed_pod_count {}\n".format(kube_pod_status_phase_failed))
-    # cluster pods' phase become unknown total count
-    outputFile.write("cluster_phase_unknown_pod_count {}\n".format(kube_pod_status_phase_unknown))
-    # cluster pods' contains container status is not ready total count
-    outputFile.write("cluster_current_status_not_ready_container_count {}\n".format(pod_container_status_not_ready))
-    # cluster pods' container status is terminated total count
-    outputFile.write("cluster_current_terminated_container_count {}\n".format(pod_container_status_terminated))
-    # cluster pods' container status is waiting  total count
-    outputFile.write("cluster_current_waiting_container_count {}\n".format(pod_container_status_waiting))
-    # cluster pods' container restart total count
-    outputFile.write("cluster_container_once_restarted_pod_count {}\n".format(pod_container_status_restarted_pod_count))
+    def to_metric(self):
+        label = {"service_name": self.service_name, "name": self.name, "state": self.state,
+                "ready": self.ready}
+        return Metric("pai_container_count", label, 1)
 
-    logger.info("cluster_current_probe_not_ready_pod_count {}\n".format(kube_pod_status_probe_not_ready))
-    logger.info("cluster_current_phase_failed_pod_count {}\n".format(kube_pod_status_phase_failed))
-    logger.info("cluster_phase_unknown_pod_count {}\n".format(kube_pod_status_phase_unknown))
-    logger.info("cluster_current_status_not_ready_container_count {}\n".format(pod_container_status_not_ready))
-    logger.info("cluster_current_terminated_container_count {}\n".format(pod_container_status_terminated))
-    logger.info("cluster_current_waiting_container_count {}\n".format(pod_container_status_waiting))
-    logger.info("cluster_container_once_restarted_pod_count {}\n".format(pod_container_status_restarted_pod_count))
-    return
 
-def check_k8s_componentStaus(address, nodesJsonObject, outputFile):
-    # 1. check api server
+class PaiNode(MetricEntity):
+    """ will output metric like
+    pai_node_count{name="1.2.3.4", out_of_disk="true", memory_pressure="true"} 1 """
+
+    def __init__(self, name, condition_map):
+        self.name = name
+        # key should be underscore instead of camel case, value should be lower case
+        self.condition_map = condition_map
+
+    def to_metric(self):
+        label = {"name": self.name}
+        for k, v in self.condition_map.items():
+            label[k] = v
+
+        return Metric("pai_node_count", label, 1)
+
+
+def catch_exception(fn, msg, default, *args, **kwargs):
+    """ wrap fn call with try catch, makes watchdog more robust """
     try:
-        apiServerhealty = requests.get("{}/healthz".format(address)).text
+        return fn(*args, **kwargs)
+    except Exception as e:
+        logger.exception(msg)
+        return default
 
-        if apiServerhealty != "ok":
-            # api server health status, 1 is error
-            apiserverHealthStr = 'apiserver_current_status_error {0}\n'.format(1)
-            logger.error(apiserverHealthStr)
-            outputFile.write(apiserverHealthStr)
-    except:
-        exception = sys.exc_info()
-        for e in exception:
-            logger.error("watchdog error {}".format(e))
-        apiserverHealthStr = 'apiserver_current_status_error {0}\n'.format(1)
-        logger.error(apiserverHealthStr)
-        outputFile.write(apiserverHealthStr)
 
-    # 2. check etcd
-    try:
-        etcdhealty = requests.get("{}/healthz/etcd".format(address)).text
+def keep_not_none(item):
+    """ used in filter to keep item that is not None """
+    return item is not None
 
-        if etcdhealty != "ok":
-            # etcd health status, 1 is error
-            etcdHealthStr = 'etcd_current_status_error {0}\n'.format(1)
-            logger.error(etcdHealthStr)
-            outputFile.write(etcdHealthStr)
-    except:
-        exception = sys.exc_info()
-        for e in exception:
-            logger.error("watchdog error {}".format(e))
-        # etcd health status, 1 is error
-        etcdHealthStr = 'etcd_current_status_error {0}\n'.format(1)
-        logger.error(etcdHealthStr)
-        outputFile.write(etcdHealthStr)
 
-    # 3. check kubelet
-    nodeItems = nodesJsonObject["items"]
-    kubeletErrorCount = 0
+def to_metric(metric_entity):
+    return metric_entity.to_metric()
 
-    for name in nodeItems:
-        try:
-            ip = name["metadata"]["name"]
-            kubeletHealthy = requests.get("http://{}:{}/healthz".format(ip, 10255)).text
 
-            if kubeletHealthy != "ok":
-                # each node kubelet health status, 1 is error
-                kubeletHealthStr = "kubelet_current_status_error{{node=\"{}\"}} {}\n".format(ip, 1)
-                logger.error(kubeletHealthStr)
-                outputFile.write(kubeletHealthStr)
-                kubeletErrorCount += 1
-        except:
-            exception = sys.exc_info()
-            for e in exception:
-                logger.error("watchdog error {}".format(e))
-            kubeletHealthStr = "kubelet_current_status_error{{node=\"{}\"}} {}\n".format(ip, 1)
-            logger.error(kubeletHealthStr)
-            outputFile.write(kubeletHealthStr)
-            kubeletErrorCount += 1
+def parse_pod_item(pod):
+    """ return pai_pod and list of pai_container, return None on not pai service
+    Because we are parsing json outputed by k8s, its format is subjected to change,
+    we should test if field exists before accessing it to avoid KeyError """
+    labels = pod["metadata"].get("labels")
+    if labels is None or "app" not in labels.keys():
+        logger.warning("unkown pod %s", pod["metadata"]["name"])
+        return None
 
-    # error total count of node kubelet health status
-    status = 'current_status_error_kubelet_count {0}\n'.format(kubeletErrorCount)
-    outputFile.write(status)
-    return
+    service_name = labels["app"] # get pai service name from label
 
-def parse_nodes_status(nodesJsonObject, outputFile):
-    # check node status
-    nodeItems = nodesJsonObject["items"]
-    readyNodeCount = 0
-    dockerError = 0
+    status = pod["status"]
 
-    for name in nodeItems:
-        # 1. check each node status
-        for condition in name["status"]["conditions"]:
-            if "Ready" == condition["type"]:
-                readyStatus = condition["status"]
-                if readyStatus != "True":
-                    # node status, value 1 is error
-                    nodeHealthStr = "node_current_notready{{node=\"{}\"}} {}\n".format(name["metadata"]["name"], 1)
-                    logger.info(nodeHealthStr)
+    if status.get("phase") is not None:
+        phase = status["phase"].lower()
+    else:
+        phase = "unknown"
+
+    host_ip = None
+    if status.get("hostIP") is not None:
+        host_ip = status["hostIP"]
+
+    condition_map = {}
+
+    conditions = status.get("conditions")
+    if conditions is not None:
+        for cond in conditions:
+            cond_t = cond["type"].lower() # Initialized|Ready|PodScheduled
+            cond_status = cond["status"].lower()
+
+            condition_map[cond_t] = cond_status
+
+    pai_pod = PaiPod(service_name, phase, host_ip, condition_map)
+
+    # generate pai_containers
+    pai_containers = []
+
+    if status.get("containerStatuses") is not None:
+        container_statuses = status["containerStatuses"]
+
+        for container_status in container_statuses:
+            container_name = container_status["name"]
+
+            ready = False
+
+            if container_status.get("ready") is not None:
+                ready = container_status["ready"]
+
+            container_state = None
+            if container_status.get("state") is not None:
+                state = container_status["state"]
+                if len(state) != 1:
+                    logger.error("unexpected state %s in container %s",
+                            json.dumps(state), container_name)
                 else:
-                    readyNodeCount += 1
-    # all nodes not ready count
-    nodeNotReadyCount = 'notready_node_count {0}\n'.format(len(nodeItems) - readyNodeCount)
-    logger.info("{}".format(nodeNotReadyCount))
-    outputFile.write(nodeNotReadyCount)
-    return
+                    container_state = state.keys()[0].lower()
 
-# check docker daemon health
-def check_docker_daemon_status(outputFile, configFilePath):
-    cluster_config = common.load_yaml_file(configFilePath)
-    node_configs = cluster_config['machine-list']
-    username = ""
-    password = ""
-    sshport = ""
+            pai_containers.append(PaiContainer(service_name, container_name,
+                container_state, str(ready).lower()))
 
-    if "default-machine-properties" in cluster_config:
-        if "username" in cluster_config["default-machine-properties"]:
-            username = cluster_config["default-machine-properties"]["username"]
-        if "password" in cluster_config["default-machine-properties"]:
-            password = cluster_config["default-machine-properties"]["password"]
-        if "sshport" in cluster_config["default-machine-properties"]:
-            port = cluster_config["default-machine-properties"]["sshport"]
-    # execute cmd to check health
+    return pai_pod, pai_containers
+
+
+def robust_parse_pod_item(item):
+    return catch_exception(parse_pod_item,
+            "catch exception when parsing pod item",
+            None,
+            item)
+
+
+def parse_pods_status(podsJsonObject):
+    metrics = []
+
+    results = filter(keep_not_none,
+            map(robust_parse_pod_item, podsJsonObject["items"]))
+
+    pai_pods = map(lambda result: result[0], results)
+    pai_containers = map(lambda result: result[1], results)
+    pai_containers = [subitem for sublist in pai_containers for subitem in sublist]
+
+    pod_metrics = map(to_metric, pai_pods)
+    container_metrics = map(to_metric, pai_containers)
+
+    return pod_metrics + container_metrics
+
+
+def collect_healthz(metric_name, address, port, url):
+    label = {"address": address, "error": "ok"}
+
+    try:
+        healthy = requests.get("http://{}:{}{}".format(address, port, url)).text
+
+        if healthy != "ok":
+            label["error"] = healthy
+    except Exception as e:
+        label["error"] = str(e)
+        logger.exception("requesting %s:%d%s failed", address, port, url)
+
+    return Metric(metric_name, label, 1)
+
+
+def collect_k8s_componentStaus(api_server_ip, api_server_port, nodesJsonObject):
+    metrics = []
+
+    metrics.append(collect_healthz("k8s_api_server_count", api_server_ip, api_server_port, "/healthz"))
+    metrics.append(collect_healthz("k8s_etcd_count", api_server_ip, api_server_port, "/healthz/etcd"))
+
+    # check kubelet
+    nodeItems = nodesJsonObject["items"]
+
+    for name in nodeItems:
+        ip = name["metadata"]["name"]
+
+        metrics.append(collect_healthz("k8s_kubelet_count", ip, 10255, "/healthz"))
+
+    return metrics
+
+
+def parse_node_item(node):
+    name = node["metadata"]["name"]
+
+    cond_map = {}
+
+    if node.get("status") is not None:
+        status = node["status"]
+
+        if status.get("conditions") is not None:
+            conditions = status["conditions"]
+
+            for cond in conditions:
+                cond_t = utils.camel_to_underscore(cond["type"])
+                status = cond["status"].lower()
+
+                cond_map[cond_t] = status
+    else:
+        logger.warning("unexpected structure of node %s: %s", name, json.dumps(node))
+
+    return PaiNode(name, cond_map)
+
+
+def robust_parse_node_item(item):
+    return catch_exception(parse_node_item,
+            "catch exception when parsing node item",
+            None,
+            item)
+
+
+def parse_nodes_status(nodesJsonObject):
+    nodeItems = nodesJsonObject["items"]
+
+    return map(to_metric,
+            map(robust_parse_node_item, nodesJsonObject["items"]))
+
+
+def collect_docker_daemon_status(hosts):
+    metrics = []
+
     cmd = "sudo systemctl is-active docker | if [ $? -eq 0 ]; then echo \"active\"; else exit 1 ; fi"
-    errorNodeCout = 0
-    for node_config in node_configs:
+
+    for host in hosts:
+        label = {"ip": host["hostip"], "error": "ok"}
+
         try:
-            if "username" not in node_config or "password" not in node_config or "sshport" not in node_config:
-                node_config["username"] = username
-                node_config["password"] = password
-                node_config["port"] = port
-
-            flag = common.ssh_shell_paramiko(node_config, cmd)
+            flag = common.ssh_shell_paramiko(host, cmd)
             if not flag:
-                errorNodeCout += 1
-                # single node docker health
-                logger.error("node_current_docker_error{{instance=\"{}\"}} {}\n".format(node_config["hostip"], 1))
-        except:
-            exception = sys.exc_info()
-            for e in exception:
-                logger.error("watchdog error {}".format(e))
-            errorNodeCout += 1
-            # single node docker health
-            logger.error("node_current_docker_error{{instance=\"{}\"}} {}\n".format(node_config["hostip"], 1))
+                label["error"] = "config" # configuration is not correct
+        except Exception as e:
+            label["error"] = str(e)
+            logger.exception("ssh to %s failed", host["hostip"])
 
-    if errorNodeCout > 0:
-        # aggregate all nodes docker health total count
-        logger.error("docker_error_node_count {}\n".format(errorNodeCout))
-    outputFile.write("docker_error_node_count {}\n".format(errorNodeCout))
+        metrics.append(Metric("docker_daemon_count", label, 1))
+
+    return metrics
+
+
+def log_and_export_metrics(path, metrics):
+    utils.export_metrics_to_file(path, metrics)
+    for metric in metrics:
+        logger.info(metric)
+
+
+def load_machine_list(configFilePath):
+    cluster_config = common.load_yaml_file(configFilePath)
+    return cluster_config['hosts']
+
+
+#####
+# Watchdog generate 7 metrics:
+# * pai_pod_count
+# * pai_container_count
+# * pai_node_count
+# * docker_daemon_count
+# * k8s_api_server_count
+# * k8s_etcd_count
+# * k8s_kubelet_count
+# Document about these metrics is in `prometheus/doc/watchdog-metrics.md`
+#####
 
 def main(argv):
     logDir = argv[0]
-    configFilePath = argv[1]
-    timeSleep = int(argv[2])
+    timeSleep = int(argv[1])
+
     address = os.environ["K8S_API_SERVER_URI"]
+    parse_result = urlparse.urlparse(address)
+    api_server_ip = parse_result.hostname
+    api_server_port = parse_result.port or 80
 
-    # init the logger
-    loggerCommon.propagate = False
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    fileHandler = RotatingFileHandler(logDir + "/watchdog.log", maxBytes= 1024 * 1024 * 100, backupCount=5)
-    fileHandler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    fileHandler.setFormatter(formatter)
-    logger.addHandler(fileHandler)
+    hosts = load_machine_list("/etc/watchdog/config.yml")
 
-    loggerRoot.setLevel(logging.INFO)
-    loggerRoot.propagate = False
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    # create formatter and add it to the handlers
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    loggerRoot.addHandler(ch)
-    loggerRoot.info("k8s does not rotate log for container, Ref Link: https://kubernetes.io/docs/concepts/cluster-administration/logging/")
-    loggerRoot.info("Watchdog container will output log to a log rotate file")
-    loggerRoot.info("Rotate File Setting: ")
-    loggerRoot.info("maxBytes= 1024 * 1024 * 100")
-    loggerRoot.info("backupCount=5")
-    loggerRoot.info("Log path {}/watchdog.log".format(logDir))
+    rootLogger = logging.getLogger()
+    rootLogger.setLevel(logging.INFO)
+    fh = RotatingFileHandler(logDir + "/watchdog.log", maxBytes= 1024 * 1024 * 100, backupCount=5)
+    fh.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(filename)s:%(lineno)s - %(message)s")
+    fh.setFormatter(formatter)
+    rootLogger.addHandler(fh)
 
     while True:
         try:
-            outputFile = open(logDir + "/watchdog.prom", "w")
+            metrics = []
+
             # 1. check service level status
             podsStatus = requests.get("{}/api/v1/namespaces/default/pods/".format(address)).json()
-            parse_pods_status(podsStatus, outputFile)
+            pods_metrics = parse_pods_status(podsStatus)
+            if pods_metrics is not None:
+                metrics.extend(pods_metrics)
 
             # 2. check nodes level status
             nodesStatus = requests.get("{}/api/v1/nodes/".format(address)).json()
-            parse_nodes_status(nodesStatus, outputFile)
-            # check docker deamon status
-            check_docker_daemon_status(outputFile, configFilePath)
+            nodes_metrics = parse_nodes_status(nodesStatus)
+            if nodes_metrics is not None:
+                metrics.extend(nodes_metrics)
 
-            # 3. check k8s level status
-            check_k8s_componentStaus(address, nodesStatus, outputFile)
-        except:
-            exception = sys.exc_info()
-            for e in exception:
-                logger.error("watchdog error {}".format(e))
+            # 3. check docker deamon status
+            docker_daemon_metrics = collect_docker_daemon_status(hosts)
+            if docker_daemon_metrics is not None:
+                metrics.extend(docker_daemon_metrics)
+
+            # 4. check k8s level status
+            k8s_metrics = collect_k8s_componentStaus(api_server_ip, api_server_port, nodesStatus)
+            if k8s_metrics is not None:
+                metrics.extend(k8s_metrics)
+
+            # 5. log and export
+            log_and_export_metrics(logDir + "/watchdog.prom", metrics)
+        except Exception as e:
+            logger.exception("watchdog failed in one iteration")
+
+            # do not lost metrics due to exception
+            log_and_export_metrics(logDir + "/watchdog.prom", metrics)
+
         time.sleep(timeSleep)
 
 # python watch_dog.py /datastorage/prometheus /usr/local/cluster-configuration.yaml 3

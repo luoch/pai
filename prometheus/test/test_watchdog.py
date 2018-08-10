@@ -15,30 +15,30 @@
 # DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import sys
 import os
+import sys
 import unittest
+import yaml
+import json
 import logging
 import logging.config
-import yaml
 
-from k8sPaiLibrary.maintainlib import repair
+# dirty here, used to help watchdog find common.py
+sys.path.append(os.path.abspath("../pai-management/k8sPaiLibrary/maintainlib/"))
 
+from exporter import watchdog
+from exporter.utils import Metric
 
-class TestMaintainlibRepair(unittest.TestCase):
+log = logging.getLogger(__name__)
 
+class TestJobExporter(unittest.TestCase):
     """
-    Test the class repair's api
+    Test job_exporter.py
     """
-
     def setUp(self):
-
         try:
-
             os.chdir(os.path.abspath("test"))
-
         except:
-
             pass
 
         configuration_path = "test_logging.yaml"
@@ -46,30 +46,36 @@ class TestMaintainlibRepair(unittest.TestCase):
         if os.path.exists(configuration_path):
             with open(configuration_path, 'rt') as f:
                 logging_configuration = yaml.safe_load(f.read())
-
             logging.config.dictConfig(logging_configuration)
-
             logging.getLogger()
 
-
-
     def tearDown(self):
-
         try:
-
             os.chdir(os.path.abspath(".."))
-
         except:
-
             pass
 
+    def get_data_test_input(self, path):
+        with open(path) as f:
+            return f.read()
 
+    def test_parse_pods_status(self):
+        obj = json.loads(self.get_data_test_input("data/pods_list.json"))
 
-    def test_repair(self):
-        pass
+        metrics = watchdog.parse_pods_status(obj)
+        self.assertTrue(len(metrics) > 0)
 
+    def test_parse_nodes_status(self):
+        obj = json.loads(self.get_data_test_input("data/nodes_list.json"))
 
+        metrics = watchdog.parse_nodes_status(obj)
+        self.assertTrue(len(metrics) > 0)
 
+    def test_parse_pods_with_no_condition(self):
+        obj = json.loads(self.get_data_test_input("data/no_condtion_pod.json"))
+
+        metrics = watchdog.parse_pods_status(obj)
+        self.assertTrue(len(metrics) > 0)
 
 if __name__ == '__main__':
     unittest.main()

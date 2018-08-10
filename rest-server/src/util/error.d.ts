@@ -4,7 +4,7 @@
 // MIT License
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+// documentation files (the 'Software'), to deal in the Software without restriction, including without limitation
 // the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
 // to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 // The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
@@ -15,23 +15,36 @@
 // DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import { HttpError } from "http-errors";
 
-// module dependencies
-const dotenv = require('dotenv');
+declare type Status =
+    number |
+    'Bad Request' |
+    'Conflict' |
+    'Forbidden' |
+    'Internal Server Error' |
+    'Not Found' |
+    'Unauthorized';
+declare type Code =
+    'BadConfigurationError' |
+    'ConflictJobError' |
+    'ConflictUserError' |
+    'ForbiddenUserError' |
+    'IncorrectPasswordError' |
+    'InvalidParametersError' |
+    'NoApiError' |
+    'NoJobError' |
+    'NoJobConfigError' |
+    'NoJobSshInfoError' |
+    'NoUserError' |
+    'NoVirtualClusterError' |
+    'RemoveAdminError' |
+    'UnauthorizedUserError' |
+    'UnknownError';
 
+declare function createError(status: Status, code: Code, message: string): HttpError;
+declare namespace createError {
+    declare function unknown(cause: Error | string): HttpError;
+}
 
-dotenv.config();
-
-// get config from environment variables
-let config = {
-  restServerUri: process.env.REST_SERVER_URI,
-  prometheusUri: process.env.PROMETHEUS_URI,
-  yarnWebPortalUri: process.env.YARN_WEB_PORTAL_URI,
-  grafanaUri: process.env.GRAFANA_URI,
-  k8sDashboardUri: process.env.K8S_DASHBOARD_URI,
-  k8sApiServerUri: process.env.K8S_API_SERVER_URI,
-  exporterPort: process.env.EXPORTER_PORT,
-};
-
-// module exports
-module.exports = config;
+export = createError;
